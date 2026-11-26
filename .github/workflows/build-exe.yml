@@ -1,0 +1,46 @@
+name: Build app.exe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyinstaller==6.11.1 requests==2.32.3
+
+      - name: Build
+        run: pyinstaller --onefile --console --name app app.py
+
+      # 實際跑一次 exe：在別的工作目錄啟動，確認 user.txt / line-resend.log 以 exe 所在位置為準，
+      # 寫入 log 後會用無效 token 呼叫 LINE API（預期 401），且程式不會因此結束
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\WebAccess\Node | Out-Null
+          New-Item -ItemType File -Force C:\WebAccess\Node\BwMobileApp.Log | Out-Null
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          Copy-Item dist\app.exe smoke\
+          Set-Content smoke\user.txt "Uci-smoke-test"
+          $p = Start-Process smoke\app.exe -WorkingDirectory $env:TEMP -PassThru
+          Start-Sleep 8
+          Add-Content C:\WebAccess\Node\BwMobileApp.Log "[Debug]Header - Bearer invalid-token-for-ci`r`n[Debug]message - smoke test 測試"
+          Start-Sleep 20
+          $alive = -not $p.HasExited
+          Stop-Process -Name app -Force -ErrorAction SilentlyContinue
+          Get-Content smoke\line-resend.log -Encoding utf8
+          if (-not $alive) { throw "app.exe exited unexpectedly" }
+          if (-not (Select-String -Path smoke\line-resend.log -Pattern "401" -Quiet)) { throw "expected a 401 from LINE API in line-resend.log" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-exe
+          path: dist/app.exe
+          if-no-files-found: error
